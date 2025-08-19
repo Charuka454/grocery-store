@@ -84,16 +84,75 @@ if(isset($_POST['add_to_cart'])){
    <meta name="viewport" content="width=device-width, initial-scale=1.0">
    <title>category</title>
 
-<!-- Tailwind CDN (optional for live preview) -->
+   <!-- Tailwind CDN -->
    <script src="https://cdn.tailwindcss.com"></script>
+   <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              primary: '#8B4513',
+              secondary: '#A0522D',
+              accent: '#D2B48C',
+              dark: '#3E2723',
+              darker: '#1B0F0A'
+            },
+            fontFamily: { gaming: ['Orbitron','monospace'] }
+          }
+        }
+      }
+   </script>
 
-
-   <!-- font awesome cdn link  -->
+   <!-- font awesome -->
    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.1.1/css/all.min.css">
 
-   <!-- custom css file link  -->
+   <!-- site css -->
    <link rel="stylesheet" href="css/style.css">
 
+   <style>
+      *{box-sizing:border-box}
+      body{
+         font-family: 'Inter', system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial, "Noto Sans";
+         background: linear-gradient(135deg,#1B0F0A 0%,#3E2723 50%,#5D4037 100%);
+         color:#fff; overflow-x:hidden;
+      }
+      .hero-bg{
+        background:
+          radial-gradient(circle at 20% 80%, rgba(139,69,19,.35) 0%, transparent 55%),
+          radial-gradient(circle at 80% 20%, rgba(210,180,140,.35) 0%, transparent 55%),
+          radial-gradient(circle at 40% 40%, rgba(160,82,45,.35) 0%, transparent 55%);
+      }
+      .glass-effect{ background:rgba(255,255,255,.08); backdrop-filter:blur(10px); border:1px solid rgba(255,255,255,.18) }
+      .neon-glow{ box-shadow:0 0 20px rgba(139,69,19,.5),0 0 40px rgba(160,82,45,.3),0 0 60px rgba(210,180,140,.2) }
+      .hover-glow:hover{ transform:translateY(-5px); box-shadow:0 10px 25px rgba(139,69,19,.35); transition:all .3s ease }
+      .gradient-text{ background: linear-gradient(45deg,#8B4513,#A0522D,#D2B48C); -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text }
+      .floating-animation{ animation:floating 3s ease-in-out infinite }
+      @keyframes floating{0%,100%{transform:translateY(0)}50%{transform:translateY(-10px)}}
+
+      .product-card{
+        background: linear-gradient(180deg, rgba(62,39,35,.92), rgba(62,39,35,.82));
+        border:1px solid rgba(210,180,140,.28);
+        border-radius:22px; backdrop-filter: blur(16px);
+        transition: transform .4s ease, box-shadow .4s ease, border-color .4s ease;
+        position:relative; overflow:hidden;
+      }
+      .product-card:hover{ transform: translateY(-8px) scale(1.02); border-color: rgba(210,180,140,.6); box-shadow:0 22px 48px rgba(160,82,45,.35) }
+      .product-card .aspect-square{
+        border-radius:18px; overflow:hidden; border:1px solid rgba(210,180,140,.25);
+        background: radial-gradient(600px 120px at 20% 0%, rgba(210,180,140,.18), transparent 60%);
+      }
+      .product-card img{ transition: transform .6s ease }
+      .group:hover .product-card img{ transform: scale(1.07) }
+      .price-badge{
+        font-size:1.05rem; padding:.55rem 1rem; border:1px solid rgba(255,255,255,.18);
+        background: linear-gradient(135deg,#8B4513,#D2B48C); color:#fff; border-radius:9999px;
+        box-shadow:0 6px 18px rgba(210,180,140,.25)
+      }
+      .product-title{ color:#FFF7EE; font-weight:800; letter-spacing:.2px; line-height:1.25; text-shadow:0 1px 0 rgba(0,0,0,.35) }
+      .qty{ background: rgba(255,255,255,.08); color:#fff }
+      .qty:focus{ outline:none; box-shadow:0 0 0 3px rgba(210,180,140,.35) }
+      .btn-grad{ background: linear-gradient(135deg,#8B4513,#D2B48C); color:#fff; }
+   </style>
 </head>
 <body>
    
@@ -103,21 +162,33 @@ if(isset($_POST['add_to_cart'])){
 $category_name = isset($_GET['category']) ? trim($_GET['category']) : '';
 $category_name = filter_var($category_name, FILTER_SANITIZE_STRING);
 ?>
-<!-- Products by Category (matches product grid UI) -->
-<section id="products" class="py-20 bg-gray-50">
-  <div class="container mx-auto px-6 lg:px-12">
 
-    <!-- Header -->
-    <div class="text-center mb-16">
-      <h2 class="text-4xl lg:text-5xl font-bold text-gray-900 mb-4">
-        <?= $category_name ? 'Category: ' . htmlspecialchars(ucwords($category_name)) : 'Products' ?>
-      </h2>
-      <p class="text-xl text-gray-600 max-w-3xl mx-auto">
-        Discover authentic Sri Lankan handicrafts in this category
-      </p>
+<section class="relative py-16 md:py-20 hero-bg overflow-hidden">
+  <div class="absolute top-10 left-10 w-72 h-72 bg-gradient-to-r from-[rgba(139,69,19,0.2)] to-[rgba(210,180,140,0.2)] rounded-full blur-3xl floating-animation"></div>
+  <div class="absolute bottom-10 right-10 w-64 h-64 bg-gradient-to-r from-[rgba(160,82,45,0.2)] to-[rgba(139,69,19,0.2)] rounded-full blur-3xl floating-animation" style="animation-delay:1s"></div>
+
+  <div class="container mx-auto px-6 lg:px-12 relative z-10">
+    <div class="glass-effect rounded-3xl p-8 md:p-10 neon-glow">
+      <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-6">
+        <div>
+          <h1 class="text-4xl md:text-5xl font-bold mb-2">
+            <span class="gradient-text font-gaming">CATEGORY</span>
+          </h1>
+          <p class="text-gray-200">
+            <?= $category_name ? htmlspecialchars(ucwords($category_name)) : 'All Products'; ?>
+          </p>
+        </div>
+        <a href="shop.php" class="inline-flex items-center px-6 py-3 rounded-xl glass-effect hover-glow">
+          <i class="fas fa-store mr-3"></i> View All Products
+        </a>
+      </div>
     </div>
+  </div>
+</section>
 
-    <div class="grid md:grid-cols-2 lg:grid-cols-3 gap-8">
+<section id="products" class="py-16">
+  <div class="container mx-auto px-6 lg:px-12">
+    <div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-8 lg:gap-10">
       <?php
         $select_products = $conn->prepare("SELECT * FROM `products` WHERE category = ? ORDER BY id DESC");
         $select_products->execute([$category_name]);
@@ -126,49 +197,56 @@ $category_name = filter_var($category_name, FILTER_SANITIZE_STRING);
           while($fetch_products = $select_products->fetch(PDO::FETCH_ASSOC)){
       ?>
       <form action="" method="POST" class="group">
-        <div class="card-hover bg-white rounded-3xl overflow-hidden shadow-lg border border-gray-100 relative">
-
-          <!-- Price Badge -->
-          <div class="absolute top-4 left-4 bg-gradient-to-r from-orange-500 to-red-600 text-white px-4 py-2 rounded-full font-bold text-sm z-10">
+        <div class="product-card p-6 relative h-full flex flex-col">
+          <!-- Price badge -->
+          <div class="absolute top-6 left-6 price-badge z-10">
             Rs <?= htmlspecialchars($fetch_products['price']); ?>/-
           </div>
 
-          <!-- View Button -->
-          <a href="view_page.php?pid=<?= (int)$fetch_products['id']; ?>"
-             class="absolute top-4 right-4 w-10 h-10 bg-white/90 backdrop-blur-sm rounded-full flex items-center justify-center text-gray-700 hover:bg-orange-500 hover:text-white transition-all duration-300 z-10"
-             aria-label="View product">
-            <i class="fas fa-eye"></i>
-          </a>
-
-          <!-- Product Image -->
-          <div class="aspect-square bg-gray-50 overflow-hidden">
-            <img src="uploaded_img/<?= htmlspecialchars($fetch_products['image']); ?>"
-                 alt="<?= htmlspecialchars($fetch_products['name']); ?>"
-                 class="w-full h-full object-cover group-hover:scale-110 transition-transform duration-500">
+          <!-- Quick actions (NOW includes wishlist) -->
+          <div class="absolute top-6 right-6 flex gap-2 z-10">
+            <!-- wishlist submit -->
+            <button type="submit" name="add_to_wishlist" title="Add to wishlist"
+                    class="w-11 h-11 glass-effect rounded-full flex items-center justify-center hover:text-white hover:bg-gradient-to-r hover:from-[#8B4513] hover:to-[#D2B48C] transition"
+                    aria-label="Add to wishlist">
+              <i class="fas fa-heart"></i>
+            </button>
+            <!-- view -->
+            <a href="view_page.php?pid=<?= (int)$fetch_products['id']; ?>"
+               class="w-11 h-11 glass-effect rounded-full flex items-center justify-center hover:text-white hover:bg-gradient-to-r hover:from-[#8B4513] hover:to-[#D2B48C] transition"
+               aria-label="View">
+               <i class="fas fa-eye"></i>
+            </a>
           </div>
 
-          <!-- Product Info -->
-          <div class="p-6">
-            <h3 class="text-xl font-bold text-gray-900 mb-3"><?= htmlspecialchars($fetch_products['name']); ?></h3>
+          <!-- Image -->
+          <div class="aspect-square mb-6">
+            <img src="uploaded_img/<?= htmlspecialchars($fetch_products['image']); ?>"
+                 alt="<?= htmlspecialchars($fetch_products['name']); ?>"
+                 class="w-full h-full object-cover">
+          </div>
 
-            <!-- Hidden Inputs -->
+          <!-- Info -->
+          <div class="space-y-4 mt-auto">
+            <h3 class="product-title text-xl"><?= htmlspecialchars($fetch_products['name']); ?></h3>
+
+            <!-- Hidden inputs -->
             <input type="hidden" name="pid" value="<?= (int)$fetch_products['id']; ?>">
             <input type="hidden" name="p_name" value="<?= htmlspecialchars($fetch_products['name']); ?>">
             <input type="hidden" name="p_price" value="<?= htmlspecialchars($fetch_products['price']); ?>">
             <input type="hidden" name="p_image" value="<?= htmlspecialchars($fetch_products['image']); ?>">
 
-            <!-- Quantity Input -->
-            <div class="mb-4">
-              <label class="block text-sm font-medium text-gray-700 mb-2">Quantity</label>
+            <!-- Qty -->
+            <div class="flex items-center gap-3">
+              <label class="text-sm font-medium text-gray-200">QTY:</label>
               <input type="number" min="1" value="1" name="p_qty"
-                     class="qty w-full px-4 py-3 border border-gray-200 rounded-xl focus:ring-2 focus:ring-orange-500 focus:border-transparent outline-none transition-all">
+                     class="qty w-24 px-3 py-2 rounded-lg text-center">
             </div>
 
-            <!-- Add to Cart Button -->
+            <!-- Add to cart -->
             <button type="submit" name="add_to_cart"
-                    class="w-full bg-gradient-to-r from-orange-500 to-red-600 text-white py-4 rounded-xl font-semibold hover:shadow-xl hover:shadow-orange-500/25 transition-all duration-300 transform hover:scale-[1.02]">
-              <i class="fas fa-shopping-cart mr-2"></i>
-              Add to Cart
+                    class="w-full btn-grad py-3.5 rounded-xl font-semibold hover-glow neon-glow transition">
+              <i class="fas fa-shopping-cart mr-2"></i> Add to Cart
             </button>
           </div>
         </div>
@@ -176,9 +254,11 @@ $category_name = filter_var($category_name, FILTER_SANITIZE_STRING);
       <?php
           }
         } else {
-          echo '<div class="col-span-full text-center py-16">
-                  <i class="fas fa-box-open text-6xl text-gray-300 mb-4"></i>
-                  <p class="text-2xl text-gray-500 font-medium">No products available!</p>
+          echo '<div class="col-span-full">
+                  <div class="glass-effect p-12 rounded-3xl text-center">
+                    <i class="fas fa-box-open text-5xl" style="color:#CD853F"></i>
+                    <p class="mt-4 text-xl text-gray-200">No products available!</p>
+                  </div>
                 </div>';
         }
       ?>
@@ -186,15 +266,8 @@ $category_name = filter_var($category_name, FILTER_SANITIZE_STRING);
   </div>
 </section>
 
-
-
-
-
-
-
 <?php include 'footer.php'; ?>
 
 <script src="js/script.js"></script>
-
 </body>
 </html>
