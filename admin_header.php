@@ -35,6 +35,12 @@ if(isset($message)){
             <span class="font-medium">Products</span>
          </a>
          
+         <a href="admin_categories.php" class="flex items-center px-4 py-3 text-gray-300 rounded-lg hover:bg-slate-700 hover:text-white transition-all duration-200 group">
+            <i class="fas fa-layer-group mr-3 text-green-400 group-hover:text-green-300"></i>
+            <span class="font-medium">Categories</span>
+         </a>
+
+         
          <a href="admin_orders.php" class="flex items-center px-4 py-3 text-gray-300 rounded-lg hover:bg-slate-700 hover:text-white transition-all duration-200 group">
             <i class="fas fa-shopping-cart mr-3 text-purple-400 group-hover:text-purple-300"></i>
             <span class="font-medium">Orders</span>
@@ -53,7 +59,7 @@ if(isset($message)){
             <i class="fas fa-star-half-stroke mr-3 text-yellow-400 group-hover:text-yellow-300"></i>
             <span class="font-medium">custormer reviews</span>
          </a>
-
+         
       </div>
    </nav>
 

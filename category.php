@@ -74,6 +74,55 @@ if(isset($_POST['add_to_cart'])){
 
 }
 
+/* =========================================================
+   CATEGORY RESOLUTION (after normalization)
+   - Accepts ?category=ID or legacy names like "wood", "wallarts"
+   - Uses products.category_id referencing categories.id
+========================================================= */
+$category_param = isset($_GET['category']) ? trim($_GET['category']) : '';
+$category_param = filter_var($category_param, FILTER_SANITIZE_STRING);
+
+$category_id = null;
+$category_label = '';
+
+try {
+   if ($category_param !== '') {
+      if (ctype_digit($category_param)) {
+         // numeric id
+         $cid = (int)$category_param;
+         $stmt = $conn->prepare("SELECT name FROM `categories` WHERE id = ? LIMIT 1");
+         $stmt->execute([$cid]);
+         $name = $stmt->fetchColumn();
+         if ($name) {
+            $category_id = $cid;
+            $category_label = $name;
+         }
+      } else {
+         // try to match by normalized name (remove spaces, case-insensitive)
+         $needle = strtolower(preg_replace('/\s+/', '', $category_param));
+         $stmt = $conn->prepare("SELECT id, name FROM `categories` WHERE LOWER(REPLACE(name,' ','')) = ? LIMIT 1");
+         $stmt->execute([$needle]);
+         if ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+            $category_id = (int)$row['id'];
+            $category_label = $row['name'];
+         }
+      }
+   }
+} catch (Exception $e) {
+   // fail silently; will fall back to "All Products"
+}
+
+/* =========================================================
+   Category list for search suggestions (datalist)
+========================================================= */
+$category_names = [];
+try {
+   $cq = $conn->query("SELECT name FROM `categories` ORDER BY name ASC");
+   if ($cq) { $category_names = $cq->fetchAll(PDO::FETCH_COLUMN); }
+} catch (Exception $e) {
+   // ignore
+}
+
 ?>
 
 <!DOCTYPE html>
@@ -158,11 +207,6 @@ if(isset($_POST['add_to_cart'])){
    
 <?php include 'header.php'; ?>
 
-<?php
-$category_name = isset($_GET['category']) ? trim($_GET['category']) : '';
-$category_name = filter_var($category_name, FILTER_SANITIZE_STRING);
-?>
-
 <section class="relative py-16 md:py-20 hero-bg overflow-hidden">
   <div class="absolute top-10 left-10 w-72 h-72 bg-gradient-to-r from-[rgba(139,69,19,0.2)] to-[rgba(210,180,140,0.2)] rounded-full blur-3xl floating-animation"></div>
   <div class="absolute bottom-10 right-10 w-64 h-64 bg-gradient-to-r from-[rgba(160,82,45,0.2)] to-[rgba(139,69,19,0.2)] rounded-full blur-3xl floating-animation" style="animation-delay:1s"></div>
@@ -175,12 +219,40 @@ $category_name = filter_var($category_name, FILTER_SANITIZE_STRING);
             <span class="gradient-text font-gaming">CATEGORY</span>
           </h1>
           <p class="text-gray-200">
-            <?= $category_name ? htmlspecialchars(ucwords($category_name)) : 'All Products'; ?>
+            <?= $category_label ? htmlspecialchars($category_label) : 'All Products'; ?>
           </p>
         </div>
-        <a href="shop.php" class="inline-flex items-center px-6 py-3 rounded-xl glass-effect hover-glow">
-          <i class="fas fa-store mr-3"></i> View All Products
-        </a>
+
+        <!-- Category Search (uses ?category=...) -->
+        <form action="" method="get" class="w-full md:w-auto">
+          <div class="flex flex-col sm:flex-row gap-3">
+            <div class="relative">
+              <i class="fas fa-magnifying-glass absolute left-3 top-1/2 -translate-y-1/2 text-gray-300"></i>
+              <input
+                type="text"
+                name="category"
+                list="categoryList"
+                value="<?= htmlspecialchars($category_param); ?>"
+                placeholder="Search category (e.g., Wood, Brass)..."
+                class="w-full sm:w-80 pl-10 pr-3 py-2 rounded-xl glass-effect border border-white/20 focus:outline-none focus:ring-2 focus:ring-[rgba(139,69,19,0.7)]"
+              />
+              <datalist id="categoryList">
+                <?php foreach($category_names as $cn): ?>
+                  <option value="<?= htmlspecialchars($cn); ?>"></option>
+                <?php endforeach; ?>
+              </datalist>
+            </div>
+            <div class="flex gap-2">
+              <button class="inline-flex items-center gap-2 px-5 py-2 rounded-xl btn-grad hover-glow">
+                <i class="fas fa-search"></i> Search
+              </button>
+              <a href="category.php" class="inline-flex items-center gap-2 px-5 py-2 rounded-xl glass-effect hover-glow">
+                <i class="fas fa-rotate-left"></i> Reset
+              </a>
+            </div>
+          </div>
+        </form>
+
       </div>
     </div>
   </div>
@@ -190,8 +262,14 @@ $category_name = filter_var($category_name, FILTER_SANITIZE_STRING);
   <div class="container mx-auto px-6 lg:px-12">
     <div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-8 lg:gap-10">
       <?php
-        $select_products = $conn->prepare("SELECT * FROM `products` WHERE category = ? ORDER BY id DESC");
-        $select_products->execute([$category_name]);
+        // Fetch products using new schema (products.category_id)
+        if ($category_id !== null) {
+           $select_products = $conn->prepare("SELECT * FROM `products` WHERE category_id = ? ORDER BY id DESC");
+           $select_products->execute([$category_id]);
+        } else {
+           $select_products = $conn->prepare("SELECT * FROM `products` ORDER BY id DESC");
+           $select_products->execute();
+        }
 
         if($select_products->rowCount() > 0){
           while($fetch_products = $select_products->fetch(PDO::FETCH_ASSOC)){
@@ -203,15 +281,13 @@ $category_name = filter_var($category_name, FILTER_SANITIZE_STRING);
             Rs <?= htmlspecialchars($fetch_products['price']); ?>/-
           </div>
 
-          <!-- Quick actions (NOW includes wishlist) -->
+          <!-- Quick actions -->
           <div class="absolute top-6 right-6 flex gap-2 z-10">
-            <!-- wishlist submit -->
             <button type="submit" name="add_to_wishlist" title="Add to wishlist"
                     class="w-11 h-11 glass-effect rounded-full flex items-center justify-center hover:text-white hover:bg-gradient-to-r hover:from-[#8B4513] hover:to-[#D2B48C] transition"
                     aria-label="Add to wishlist">
               <i class="fas fa-heart"></i>
             </button>
-            <!-- view -->
             <a href="view_page.php?pid=<?= (int)$fetch_products['id']; ?>"
                class="w-11 h-11 glass-effect rounded-full flex items-center justify-center hover:text-white hover:bg-gradient-to-r hover:from-[#8B4513] hover:to-[#D2B48C] transition"
                aria-label="View">

@@ -2,48 +2,58 @@
 @include 'config.php';
 session_start();
 
-$admin_id = $_SESSION['admin_id'];
-if(!isset($admin_id)){
+$admin_id = $_SESSION['admin_id'] ?? null;
+if(!$admin_id){
    header('location:login.php');
    exit;
 }
 
+$message = [];
+
 /* =========================================
-   ADD PRODUCT (original)
+   ADD PRODUCT  (with categories)
 ========================================= */
 if(isset($_POST['add_product'])){
-   $name     = filter_var($_POST['name'], FILTER_SANITIZE_STRING);
-   $price    = filter_var($_POST['price'], FILTER_SANITIZE_STRING);
-   $category = filter_var($_POST['category'], FILTER_SANITIZE_STRING);
-   $details  = filter_var($_POST['details'], FILTER_SANITIZE_STRING);
+   $name        = filter_var($_POST['name'] ?? '', FILTER_SANITIZE_STRING);
+   $price       = isset($_POST['price']) ? (float)$_POST['price'] : 0;
+   $category_id = isset($_POST['category_id']) ? (int)$_POST['category_id'] : 0;
+   $details     = filter_var($_POST['details'] ?? '', FILTER_SANITIZE_STRING);
 
-   $image          = filter_var($_FILES['image']['name'], FILTER_SANITIZE_STRING);
-   $image_size     = $_FILES['image']['size'];
-   $image_tmp_name = $_FILES['image']['tmp_name'];
-   $image_folder   = 'uploaded_img/'.$image;
+   $image          = filter_var($_FILES['image']['name'] ?? '', FILTER_SANITIZE_STRING);
+   $image_size     = $_FILES['image']['size'] ?? 0;
+   $image_tmp_name = $_FILES['image']['tmp_name'] ?? '';
+   $image_folder   = $image ? ('uploaded_img/'.$image) : '';
 
-   $select_products = $conn->prepare("SELECT * FROM `products` WHERE name = ?");
+   // Basic validation
+   if($category_id <= 0){
+      $message[] = 'Please choose a category.';
+   }
+
+   // Unique product name check
+   $select_products = $conn->prepare("SELECT 1 FROM `products` WHERE name = ? LIMIT 1");
    $select_products->execute([$name]);
 
    if($select_products->rowCount() > 0){
-      $message[] = 'product name already exist!';
-   }else{
-      $insert_products = $conn->prepare("INSERT INTO `products`(name, category, details, price, image) VALUES(?,?,?,?,?)");
-      $insert_products->execute([$name, $category, $details, $price, $image]);
+      $message[] = 'Product name already exists!';
+   }elseif(empty($message)){
+      $insert_products = $conn->prepare("INSERT INTO `products`(name, category_id, details, price, image) VALUES(?,?,?,?,?)");
+      $insert_products->execute([$name, $category_id, $details, $price, $image]);
 
       if($insert_products){
-         if($image_size > 2000000){
-            $message[] = 'image size is too large!';
-         }else{
+         if($image && $image_size > 2000000){
+            $message[] = 'Image size is too large!';
+         }elseif($image){
             move_uploaded_file($image_tmp_name, $image_folder);
-            $message[] = 'new product added!';
+            $message[] = 'New product added!';
+         }else{
+            $message[] = 'New product added (no image).';
          }
       }
    }
 }
 
 /* =========================================
-   DELETE PRODUCT (original) + delete promos
+   DELETE PRODUCT + cascade deletes
 ========================================= */
 if(isset($_GET['delete'])){
    $delete_id = (int)$_GET['delete'];
@@ -53,7 +63,9 @@ if(isset($_GET['delete'])){
    $select_delete_image->execute([$delete_id]);
    if($select_delete_image->rowCount()){
       $fetch_delete_image = $select_delete_image->fetch(PDO::FETCH_ASSOC);
-      @unlink('uploaded_img/'.$fetch_delete_image['image']);
+      if(!empty($fetch_delete_image['image'])){
+         @unlink('uploaded_img/'.$fetch_delete_image['image']);
+      }
    }
 
    // delete product
@@ -148,26 +160,48 @@ if(isset($_GET['delete_promo'])){
 }
 
 /* =========================================
-   SEARCH helper + state
+   Load Categories for dropdowns/filters
 ========================================= */
-function build_products_search_clause(string $term, array &$params): string {
-    $term = trim($term);
-    if ($term === '') return '';
-    $like = "%{$term}%";
-    $params[] = $like; // name
-    $params[] = $like; // category
-    $params[] = $like; // details
-    return " WHERE (name LIKE ? OR category LIKE ? OR details LIKE ?) ";
-}
-$q = isset($_GET['q']) ? trim($_GET['q']) : '';
-$params = [];
-$where  = build_products_search_clause($q, $params);
+$cats_stmt = $conn->prepare("SELECT id, name FROM categories ORDER BY name");
+$cats_stmt->execute();
+$all_categories = $cats_stmt->fetchAll(PDO::FETCH_ASSOC);
 
-// Count results (for UX)
-$sql_count = "SELECT COUNT(*) AS c FROM `products`" . $where;
-$stmt_count = $conn->prepare($sql_count);
-$stmt_count->execute($params);
-$total_results = (int)($stmt_count->fetch(PDO::FETCH_ASSOC)['c'] ?? 0);
+/* =========================================
+   Search / Filter Products
+========================================= */
+$q   = isset($_GET['q'])   ? trim($_GET['q']) : '';
+$cat = isset($_GET['cat']) ? (int)$_GET['cat'] : 0;
+
+$p_where = [];
+$p_params = [];
+
+if($q !== ''){
+   $like = "%{$q}%";
+   $p_where[] = "(p.name LIKE ? OR p.details LIKE ? OR c.name LIKE ?)";
+   array_push($p_params, $like, $like, $like);
+}
+if($cat > 0){
+   $p_where[] = "p.category_id = ?";
+   $p_params[] = $cat;
+}
+$where_sql = $p_where ? ('WHERE '.implode(' AND ', $p_where)) : '';
+
+/* Count for label */
+$stmt_count = $conn->prepare("SELECT COUNT(*) FROM products p LEFT JOIN categories c ON c.id = p.category_id $where_sql");
+$stmt_count->execute($p_params);
+$total_results = (int)$stmt_count->fetchColumn();
+
+/* =========================================
+   Fetch Products (joined with category)
+========================================= */
+$show_products = $conn->prepare("
+  SELECT p.*, c.name AS category_name
+  FROM products p
+  LEFT JOIN categories c ON c.id = p.category_id
+  $where_sql
+  ORDER BY p.id DESC
+");
+$show_products->execute($p_params);
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -182,7 +216,6 @@ $total_results = (int)($stmt_count->fetch(PDO::FETCH_ASSOC)['c'] ?? 0);
 
    <!-- Font Awesome -->
    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.1.1/css/all.min.css" />
-
    <style>
      .line-clamp-2{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
      .line-clamp-3{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
@@ -247,27 +280,32 @@ $total_results = (int)($stmt_count->fetch(PDO::FETCH_ASSOC)['c'] ?? 0);
     <div id="add-form" class="bg-white rounded-lg shadow p-6 mb-8">
       <h3 class="text-lg font-semibold mb-4">Add New Product</h3>
 
+      <?php if(empty($all_categories)): ?>
+        <div class="mb-4 p-3 rounded bg-yellow-50 text-yellow-900 border border-yellow-200">
+          No categories found. <a class="underline text-blue-700" href="admin_categories.php">Create a category</a> first.
+        </div>
+      <?php endif; ?>
+
       <form action="" method="POST" enctype="multipart/form-data" class="space-y-4">
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div class="space-y-4">
             <input type="text" name="name" required placeholder="Enter product name"
                    class="w-full border rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500" />
 
-            <select name="category" required
+            <select name="category_id" required
                     class="w-full border rounded px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500">
               <option value="" disabled selected>Select category</option>
-              <option value="Wood">Wood</option>
-              <option value="Clothes">Clothes</option>
-              <option value="Wall">Wall decorations</option>
-              <option value="Brass">Brass</option>
+              <?php foreach($all_categories as $cat): ?>
+                <option value="<?= (int)$cat['id']; ?>"><?= htmlspecialchars($cat['name']); ?></option>
+              <?php endforeach; ?>
             </select>
           </div>
 
           <div class="space-y-4">
-            <input type="number" step="0.01" min="0" name="price" required placeholder="Enter product price"
+            <input type="number" step="0.01" min="0" inputmode="decimal" name="price" required placeholder="Enter product price (Rs)"
                    class="w-full border rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500" />
 
-            <input type="file" name="image" required accept="image/jpg, image/jpeg, image/png"
+            <input type="file" name="image" accept="image/jpg, image/jpeg, image/png"
                    class="w-full border rounded px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500" />
           </div>
         </div>
@@ -282,52 +320,60 @@ $total_results = (int)($stmt_count->fetch(PDO::FETCH_ASSOC)['c'] ?? 0);
       </form>
     </div>
 
-    <!-- Products Grid + SEARCH -->
-    <div class="bg-white rounded-lg shadow">
-      <div class="p-4 md:p-6 border-b">
-        <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
-          <div>
-            <h3 class="text-lg font-semibold">Products Added</h3>
-            <?php if($q !== ''): ?>
-              <p class="text-gray-500 text-sm">
-                Showing <span class="font-medium"><?= $total_results; ?></span> result(s) for
-                “<span class="font-medium"><?= htmlspecialchars($q); ?></span>”.
-                <a href="admin_products.php" class="text-blue-600 hover:underline ml-2">Reset</a>
-              </p>
-            <?php else: ?>
-              <p class="text-gray-500 text-sm">Manage products and promotions</p>
-            <?php endif; ?>
-          </div>
-
-          <!-- Search form -->
-          <form method="GET" class="w-full md:w-auto">
-            <div class="relative">
-              <i class="fas fa-magnifying-glass absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"></i>
-              <input
-                type="text"
-                name="q"
-                value="<?= htmlspecialchars($q); ?>"
-                placeholder="Search name, category, details…"
-                class="w-full md:w-80 pl-10 pr-10 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
-              <?php if($q !== ''): ?>
-                <a href="admin_products.php" class="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600" title="Clear">
-                  <i class="fas fa-xmark"></i>
-                </a>
+    <!-- Toolbar: Search / Filter -->
+    <div class="bg-white rounded-lg shadow p-4 md:p-6 mb-4">
+      <form method="GET" class="flex flex-col sm:flex-row gap-2 sm:items-center sm:justify-between">
+        <div>
+          <h3 class="text-lg font-semibold">Products Added</h3>
+          <?php if($q !== '' || $cat > 0): ?>
+            <p class="text-gray-500 text-sm">
+              Showing <span class="font-medium"><?= $total_results; ?></span> result(s)
+              <?php if($q !== ''): ?> for “<span class="font-medium"><?= htmlspecialchars($q); ?></span>”<?php endif; ?>
+              <?php if($cat > 0): ?>
+                in <span class="font-medium">
+                  <?php
+                    $nm = array_values(array_filter($all_categories, fn($c)=> (int)$c['id']===$cat));
+                    echo $nm ? htmlspecialchars($nm[0]['name']) : 'category';
+                  ?>
+                </span>
               <?php endif; ?>
-            </div>
-          </form>
+              <a href="admin_products.php" class="text-blue-600 hover:underline ml-2">Reset</a>
+            </p>
+          <?php else: ?>
+            <p class="text-gray-500 text-sm">Search, filter and manage products</p>
+          <?php endif; ?>
         </div>
-      </div>
+        <div class="flex flex-col sm:flex-row gap-2">
+          <div class="relative">
+            <i class="fas fa-magnifying-glass absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"></i>
+            <input
+              type="text"
+              name="q"
+              value="<?= htmlspecialchars($q); ?>"
+              placeholder="Search product, details, category…"
+              class="w-full sm:w-80 pl-10 pr-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+          </div>
+          <select name="cat" class="w-full sm:w-52 py-2 px-3 border rounded bg-white focus:outline-none focus:ring-2 focus:ring-blue-500">
+            <option value="0">All categories</option>
+            <?php foreach($all_categories as $catOpt): ?>
+              <option value="<?= (int)$catOpt['id']; ?>" <?= $cat===(int)$catOpt['id']?'selected':''; ?>>
+                <?= htmlspecialchars($catOpt['name']); ?>
+              </option>
+            <?php endforeach; ?>
+          </select>
+          <button class="inline-flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded transition">
+            <i class="fas fa-filter"></i> Apply
+          </button>
+        </div>
+      </form>
+    </div>
 
+    <!-- Products Grid -->
+    <div class="bg-white rounded-lg shadow">
       <div class="p-4 md:p-6">
         <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-5">
           <?php
-            // MAIN PRODUCT QUERY with optional WHERE
-            $sql = "SELECT * FROM `products`" . $where . " ORDER BY id DESC";
-            $show_products = $conn->prepare($sql);
-            $show_products->execute($params);
-
             if($show_products->rowCount() > 0){
               while($fetch_products = $show_products->fetch(PDO::FETCH_ASSOC)){
                 $pid = (int)$fetch_products['id'];
@@ -377,7 +423,7 @@ $total_results = (int)($stmt_count->fetch(PDO::FETCH_ASSOC)['c'] ?? 0);
               <div class="flex items-start justify-between gap-2">
                 <h4 class="font-semibold line-clamp-2"><?= htmlspecialchars($fetch_products['name']); ?></h4>
                 <span class="text-xs px-2 py-1 rounded bg-indigo-100 text-indigo-700">
-                  <?= htmlspecialchars($fetch_products['category']); ?>
+                  <?= htmlspecialchars($fetch_products['category_name'] ?? 'Uncategorized'); ?>
                 </span>
               </div>
 
@@ -387,15 +433,15 @@ $total_results = (int)($stmt_count->fetch(PDO::FETCH_ASSOC)['c'] ?? 0);
 
               <div class="flex items-center gap-2 pt-1">
                 <?php if($isLive): ?>
-                  <span class="text-sm text-gray-500 line-through">$<?= number_format($base,2); ?></span>
-                  <span class="text-green-700 font-semibold">$<?= number_format($final,2); ?></span>
+                  <span class="text-sm text-gray-500 line-through">Rs <?= number_format($base,2); ?></span>
+                  <span class="text-green-700 font-semibold">Rs <?= number_format($final,2); ?></span>
                   <?php if($final > 0 && $base > 0): ?>
                     <span class="text-xs px-2 py-0.5 rounded bg-green-100 text-green-700">
                       SAVE <?= round((($base-$final)/$base)*100); ?>%
                     </span>
                   <?php endif; ?>
                 <?php else: ?>
-                  <span class="text-gray-800 font-semibold">$<?= number_format($base,2); ?></span>
+                  <span class="text-gray-800 font-semibold">Rs <?= number_format((float)$fetch_products['price'],2); ?></span>
                 <?php endif; ?>
               </div>
 
