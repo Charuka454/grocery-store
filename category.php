@@ -1,83 +1,18 @@
 <?php
-
 @include 'config.php';
 
 session_start();
 
-$user_id = $_SESSION['user_id'];
-
-if(!isset($user_id)){
+$user_id = $_SESSION['user_id'] ?? null;
+if(!$user_id){
    header('location:login.php');
-};
-
-if(isset($_POST['add_to_wishlist'])){
-
-   $pid = $_POST['pid'];
-   $pid = filter_var($pid, FILTER_SANITIZE_STRING);
-   $p_name = $_POST['p_name'];
-   $p_name = filter_var($p_name, FILTER_SANITIZE_STRING);
-   $p_price = $_POST['p_price'];
-   $p_price = filter_var($p_price, FILTER_SANITIZE_STRING);
-   $p_image = $_POST['p_image'];
-   $p_image = filter_var($p_image, FILTER_SANITIZE_STRING);
-
-   $check_wishlist_numbers = $conn->prepare("SELECT * FROM `wishlist` WHERE name = ? AND user_id = ?");
-   $check_wishlist_numbers->execute([$p_name, $user_id]);
-
-   $check_cart_numbers = $conn->prepare("SELECT * FROM `cart` WHERE name = ? AND user_id = ?");
-   $check_cart_numbers->execute([$p_name, $user_id]);
-
-   if($check_wishlist_numbers->rowCount() > 0){
-      $message[] = 'already added to wishlist!';
-   }elseif($check_cart_numbers->rowCount() > 0){
-      $message[] = 'already added to cart!';
-   }else{
-      $insert_wishlist = $conn->prepare("INSERT INTO `wishlist`(user_id, pid, name, price, image) VALUES(?,?,?,?,?)");
-      $insert_wishlist->execute([$user_id, $pid, $p_name, $p_price, $p_image]);
-      $message[] = 'added to wishlist!';
-   }
-
+   exit;
 }
 
-if(isset($_POST['add_to_cart'])){
-
-   $pid = $_POST['pid'];
-   $pid = filter_var($pid, FILTER_SANITIZE_STRING);
-   $p_name = $_POST['p_name'];
-   $p_name = filter_var($p_name, FILTER_SANITIZE_STRING);
-   $p_price = $_POST['p_price'];
-   $p_price = filter_var($p_price, FILTER_SANITIZE_STRING);
-   $p_image = $_POST['p_image'];
-   $p_image = filter_var($p_image, FILTER_SANITIZE_STRING);
-   $p_qty = $_POST['p_qty'];
-   $p_qty = filter_var($p_qty, FILTER_SANITIZE_STRING);
-
-   $check_cart_numbers = $conn->prepare("SELECT * FROM `cart` WHERE name = ? AND user_id = ?");
-   $check_cart_numbers->execute([$p_name, $user_id]);
-
-   if($check_cart_numbers->rowCount() > 0){
-      $message[] = 'already added to cart!';
-   }else{
-
-      $check_wishlist_numbers = $conn->prepare("SELECT * FROM `wishlist` WHERE name = ? AND user_id = ?");
-      $check_wishlist_numbers->execute([$p_name, $user_id]);
-
-      if($check_wishlist_numbers->rowCount() > 0){
-         $delete_wishlist = $conn->prepare("DELETE FROM `wishlist` WHERE name = ? AND user_id = ?");
-         $delete_wishlist->execute([$p_name, $user_id]);
-      }
-
-      $insert_cart = $conn->prepare("INSERT INTO `cart`(user_id, pid, name, price, quantity, image) VALUES(?,?,?,?,?,?)");
-      $insert_cart->execute([$user_id, $pid, $p_name, $p_price, $p_qty, $p_image]);
-      $message[] = 'added to cart!';
-   }
-
-}
+$message = $message ?? [];
 
 /* =========================================================
-   CATEGORY RESOLUTION (after normalization)
-   - Accepts ?category=ID or legacy names like "wood", "wallarts"
-   - Uses products.category_id referencing categories.id
+   CATEGORY RESOLUTION (accepts ?category=ID or name)
 ========================================================= */
 $category_param = isset($_GET['category']) ? trim($_GET['category']) : '';
 $category_param = filter_var($category_param, FILTER_SANITIZE_STRING);
@@ -88,29 +23,21 @@ $category_label = '';
 try {
    if ($category_param !== '') {
       if (ctype_digit($category_param)) {
-         // numeric id
          $cid = (int)$category_param;
          $stmt = $conn->prepare("SELECT name FROM `categories` WHERE id = ? LIMIT 1");
          $stmt->execute([$cid]);
          $name = $stmt->fetchColumn();
-         if ($name) {
-            $category_id = $cid;
-            $category_label = $name;
-         }
+         if ($name) { $category_id = $cid; $category_label = $name; }
       } else {
-         // try to match by normalized name (remove spaces, case-insensitive)
          $needle = strtolower(preg_replace('/\s+/', '', $category_param));
          $stmt = $conn->prepare("SELECT id, name FROM `categories` WHERE LOWER(REPLACE(name,' ','')) = ? LIMIT 1");
          $stmt->execute([$needle]);
          if ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
-            $category_id = (int)$row['id'];
-            $category_label = $row['name'];
+            $category_id = (int)$row['id']; $category_label = $row['name'];
          }
       }
    }
-} catch (Exception $e) {
-   // fail silently; will fall back to "All Products"
-}
+} catch (Exception $e) { /* ignore */ }
 
 /* =========================================================
    Category list for search suggestions (datalist)
@@ -119,12 +46,93 @@ $category_names = [];
 try {
    $cq = $conn->query("SELECT name FROM `categories` ORDER BY name ASC");
    if ($cq) { $category_names = $cq->fetchAll(PDO::FETCH_COLUMN); }
-} catch (Exception $e) {
-   // ignore
+} catch (Exception $e) {}
+
+/* =========================
+   Add to WISHLIST (trust pid)
+========================= */
+if(isset($_POST['add_to_wishlist'])){
+   $pid = (int)($_POST['pid'] ?? 0);
+
+   $pstmt = $conn->prepare("SELECT id, name, price, image FROM products WHERE id = ? LIMIT 1");
+   $pstmt->execute([$pid]);
+   $prod = $pstmt->fetch(PDO::FETCH_ASSOC);
+
+   if(!$prod){
+      $message[] = 'Product not found.';
+   }else{
+      $checkW = $conn->prepare("SELECT 1 FROM wishlist WHERE pid = ? AND user_id = ? LIMIT 1");
+      $checkW->execute([$pid, $user_id]);
+
+      $checkC = $conn->prepare("SELECT 1 FROM cart WHERE pid = ? AND user_id = ? LIMIT 1");
+      $checkC->execute([$pid, $user_id]);
+
+      if($checkW->rowCount() > 0){
+         $message[] = 'Already in wishlist!';
+      }elseif($checkC->rowCount() > 0){
+         $message[] = 'Already in cart!';
+      }else{
+         $ins = $conn->prepare("INSERT INTO wishlist (user_id, pid, name, price, image) VALUES (?,?,?,?,?)");
+         $ins->execute([$user_id, $prod['id'], $prod['name'], $prod['price'], $prod['image']]);
+         $message[] = 'Added to wishlist!';
+      }
+   }
 }
 
-?>
+/* =========================
+   Add to CART with stock subtraction
+========================= */
+if(isset($_POST['add_to_cart'])){
+   $pid  = (int)($_POST['pid'] ?? 0);
+   $reqQ = max(1, (int)($_POST['p_qty'] ?? 1));
 
+   try{
+      $conn->beginTransaction();
+
+      $pstmt = $conn->prepare("SELECT id, name, price, image, quantity FROM products WHERE id = ? FOR UPDATE");
+      $pstmt->execute([$pid]);
+      $prod = $pstmt->fetch(PDO::FETCH_ASSOC);
+
+      if(!$prod){
+         $conn->rollBack();
+         $message[] = 'Product not found.';
+      }elseif((int)$prod['quantity'] <= 0){
+         $conn->rollBack();
+         $message[] = 'Out of stock.';
+      }else{
+         $avail   = (int)$prod['quantity'];
+         $addQty  = min($reqQ, $avail);
+         $newStock = $avail - $addQty;
+
+         $csel = $conn->prepare("SELECT id, quantity FROM cart WHERE user_id = ? AND pid = ? FOR UPDATE");
+         $csel->execute([$user_id, $pid]);
+
+         if($row = $csel->fetch(PDO::FETCH_ASSOC)){
+            $newCartQty = (int)$row['quantity'] + $addQty;
+            $cupd = $conn->prepare("UPDATE cart SET quantity = ?, price = ?, name = ?, image = ? WHERE id = ?");
+            $cupd->execute([$newCartQty, $prod['price'], $prod['name'], $prod['image'], $row['id']]);
+         }else{
+            $cins = $conn->prepare("INSERT INTO cart (user_id, pid, name, price, quantity, image) VALUES (?,?,?,?,?,?)");
+            $cins->execute([$user_id, $prod['id'], $prod['name'], $prod['price'], $addQty, $prod['image']]);
+         }
+
+         $up = $conn->prepare("UPDATE products SET quantity = ? WHERE id = ?");
+         $up->execute([$newStock, $pid]);
+
+         $conn->commit();
+
+         if($addQty < $reqQ){
+            $message[] = "Only {$addQty} left; added {$addQty} to cart.";
+         }else{
+            $message[] = 'Added to cart!';
+         }
+      }
+   }catch(Exception $e){
+      if($conn->inTransaction()){ $conn->rollBack(); }
+      $message[] = 'Could not add to cart. Please try again.';
+   }
+}
+?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -178,20 +186,39 @@ try {
       .floating-animation{ animation:floating 3s ease-in-out infinite }
       @keyframes floating{0%,100%{transform:translateY(0)}50%{transform:translateY(-10px)}}
 
+      /* -------- Product cards -------- */
       .product-card{
         background: linear-gradient(180deg, rgba(62,39,35,.92), rgba(62,39,35,.82));
-        border:1px solid rgba(210,180,140,.28);
-        border-radius:22px; backdrop-filter: blur(16px);
-        transition: transform .4s ease, box-shadow .4s ease, border-color .4s ease;
+        border:1px solid rgba(210,180,140,.28);      /* constant border to avoid subpixel shifts */
+        border-radius:22px;
+        backdrop-filter: blur(16px);
         position:relative; overflow:hidden;
+
+        /* FIX: prevent grid color/flicker & neighbor influence */
+        isolation:isolate;            /* isolate blending to this card */
+        contain: paint;               /* confine painting to this element */
+        backface-visibility:hidden;
+        transform: translateZ(0);     /* promote to its own layer */
+        will-change: transform;       /* hint GPU */
+
+        transition: transform .35s ease, box-shadow .35s ease; /* removed border-color change */
       }
-      .product-card:hover{ transform: translateY(-8px) scale(1.02); border-color: rgba(210,180,140,.6); box-shadow:0 22px 48px rgba(160,82,45,.35) }
+      .product-card:hover{
+        transform: translateY(-6px);  /* removed scale to avoid overlapping neighbors */
+        box-shadow: 0 22px 48px rgba(160,82,45,.35);
+      }
+
       .product-card .aspect-square{
         border-radius:18px; overflow:hidden; border:1px solid rgba(210,180,140,.25);
         background: radial-gradient(600px 120px at 20% 0%, rgba(210,180,140,.18), transparent 60%);
+        backface-visibility:hidden; transform: translateZ(0); will-change: transform;
       }
-      .product-card img{ transition: transform .6s ease }
-      .group:hover .product-card img{ transform: scale(1.07) }
+      .product-card img{
+        transition: transform .6s ease;
+        backface-visibility:hidden; transform: translateZ(0); will-change: transform;
+      }
+      .group:hover .product-card img{ transform: scale(1.05) } /* gentler scale to reduce repaint load */
+
       .price-badge{
         font-size:1.05rem; padding:.55rem 1rem; border:1px solid rgba(255,255,255,.18);
         background: linear-gradient(135deg,#8B4513,#D2B48C); color:#fff; border-radius:9999px;
@@ -200,7 +227,8 @@ try {
       .product-title{ color:#FFF7EE; font-weight:800; letter-spacing:.2px; line-height:1.25; text-shadow:0 1px 0 rgba(0,0,0,.35) }
       .qty{ background: rgba(255,255,255,.08); color:#fff }
       .qty:focus{ outline:none; box-shadow:0 0 0 3px rgba(210,180,140,.35) }
-      .btn-grad{ background: linear-gradient(135deg,#8B4513,#D2B48C); color:#fff; }
+      .badge-stock{position:absolute;top:6px;right:6px}
+      .oos-overlay{position:absolute;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;font-weight:800;letter-spacing:.5px}
    </style>
 </head>
 <body>
@@ -243,7 +271,7 @@ try {
               </datalist>
             </div>
             <div class="flex gap-2">
-              <button class="inline-flex items-center gap-2 px-5 py-2 rounded-xl btn-grad hover-glow">
+              <button class="inline-flex items-center gap-2 px-5 py-2 rounded-xl btn-grad hover-glow" type="submit" style="background:linear-gradient(135deg,#8B4513,#D2B48C);color:#fff;">
                 <i class="fas fa-search"></i> Search
               </button>
               <a href="category.php" class="inline-flex items-center gap-2 px-5 py-2 rounded-xl glass-effect hover-glow">
@@ -260,9 +288,17 @@ try {
 
 <section id="products" class="py-16">
   <div class="container mx-auto px-6 lg:px-12">
+
+    <?php if(!empty($message)): ?>
+      <div class="max-w-3xl mx-auto mb-8 space-y-2">
+        <?php foreach($message as $m): ?>
+          <div class="bg-amber-100 text-amber-900 border border-amber-300 px-4 py-2 rounded"><?= htmlspecialchars($m) ?></div>
+        <?php endforeach; ?>
+      </div>
+    <?php endif; ?>
+
     <div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-8 lg:gap-10">
       <?php
-        // Fetch products using new schema (products.category_id)
         if ($category_id !== null) {
            $select_products = $conn->prepare("SELECT * FROM `products` WHERE category_id = ? ORDER BY id DESC");
            $select_products->execute([$category_id]);
@@ -273,12 +309,25 @@ try {
 
         if($select_products->rowCount() > 0){
           while($fetch_products = $select_products->fetch(PDO::FETCH_ASSOC)){
+            $pid   = (int)$fetch_products['id'];
+            $price = (float)$fetch_products['price'];
+            $qty   = (int)($fetch_products['quantity'] ?? 0);
+            $inStock = $qty > 0;
       ?>
       <form action="" method="POST" class="group">
         <div class="product-card p-6 relative h-full flex flex-col">
           <!-- Price badge -->
           <div class="absolute top-6 left-6 price-badge z-10">
-            Rs <?= htmlspecialchars($fetch_products['price']); ?>/-
+            Rs <?= number_format($price, 2); ?>/-
+          </div>
+
+          <!-- Stock badge (show only when < 10; hide for 10+) -->
+          <div class="badge-stock z-10">
+            <?php if(!$inStock): ?>
+              <span class="text-xs px-2 py-1 rounded bg-rose-100 text-rose-800">Out of stock</span>
+            <?php elseif($qty < 10): ?>
+              <span class="text-xs px-2 py-1 rounded bg-amber-100 text-amber-800">Only <?= $qty; ?> left</span>
+            <?php endif; ?>
           </div>
 
           <!-- Quick actions -->
@@ -288,7 +337,7 @@ try {
                     aria-label="Add to wishlist">
               <i class="fas fa-heart"></i>
             </button>
-            <a href="view_page.php?pid=<?= (int)$fetch_products['id']; ?>"
+            <a href="view_page.php?pid=<?= $pid; ?>"
                class="w-11 h-11 glass-effect rounded-full flex items-center justify-center hover:text-white hover:bg-gradient-to-r hover:from-[#8B4513] hover:to-[#D2B48C] transition"
                aria-label="View">
                <i class="fas fa-eye"></i>
@@ -296,33 +345,35 @@ try {
           </div>
 
           <!-- Image -->
-          <div class="aspect-square mb-6">
+          <div class="aspect-square mb-6 relative">
             <img src="uploaded_img/<?= htmlspecialchars($fetch_products['image']); ?>"
                  alt="<?= htmlspecialchars($fetch_products['name']); ?>"
                  class="w-full h-full object-cover">
+            <?php if(!$inStock): ?>
+              <div class="oos-overlay text-white text-lg rounded">OUT OF STOCK</div>
+            <?php endif; ?>
           </div>
 
           <!-- Info -->
           <div class="space-y-4 mt-auto">
             <h3 class="product-title text-xl"><?= htmlspecialchars($fetch_products['name']); ?></h3>
 
-            <!-- Hidden inputs -->
-            <input type="hidden" name="pid" value="<?= (int)$fetch_products['id']; ?>">
-            <input type="hidden" name="p_name" value="<?= htmlspecialchars($fetch_products['name']); ?>">
-            <input type="hidden" name="p_price" value="<?= htmlspecialchars($fetch_products['price']); ?>">
-            <input type="hidden" name="p_image" value="<?= htmlspecialchars($fetch_products['image']); ?>">
+            <!-- Hidden inputs (server trusts only pid) -->
+            <input type="hidden" name="pid" value="<?= $pid; ?>">
 
-            <!-- Qty -->
+            <!-- Qty (no max; server caps) -->
             <div class="flex items-center gap-3">
               <label class="text-sm font-medium text-gray-200">QTY:</label>
-              <input type="number" min="1" value="1" name="p_qty"
-                     class="qty w-24 px-3 py-2 rounded-lg text-center">
+              <input type="number" min="1" value="<?= $inStock ? 1 : 0; ?>" name="p_qty"
+                     class="qty w-24 px-3 py-2 rounded-lg text-center" <?= $inStock ? '' : 'disabled'; ?>>
             </div>
 
             <!-- Add to cart -->
             <button type="submit" name="add_to_cart"
-                    class="w-full btn-grad py-3.5 rounded-xl font-semibold hover-glow neon-glow transition">
-              <i class="fas fa-shopping-cart mr-2"></i> Add to Cart
+                    class="w-full py-3.5 rounded-xl font-semibold hover-glow neon-glow transition"
+                    style="background:linear-gradient(135deg,#8B4513,#D2B48C);color:#fff;"
+                    <?= $inStock ? '' : 'disabled style="opacity:.6;cursor:not-allowed"'; ?>>
+              <i class="fas fa-shopping-cart mr-2"></i> <?= $inStock ? 'Add to Cart' : 'Unavailable' ?>
             </button>
           </div>
         </div>
@@ -343,7 +394,6 @@ try {
 </section>
 
 <?php include 'footer.php'; ?>
-
 <script src="js/script.js"></script>
 </body>
 </html>

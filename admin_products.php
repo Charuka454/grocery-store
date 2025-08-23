@@ -10,14 +10,42 @@ if(!$admin_id){
 
 $message = [];
 
+/* ---------- helpers for datetime-local <-> MySQL DATETIME ---------- */
+function to_mysql_dt(?string $local){
+   // Accepts: "YYYY-MM-DDTHH:MM" or already "YYYY-MM-DD HH:MM:SS"
+   if(!$local){ return null; }
+   $local = trim($local);
+   if($local === '') return null;
+
+   // If it contains 'T', it's from datetime-local (seconds often omitted)
+   if (strpos($local, 'T') !== false) {
+      // Normalize to seconds
+      // e.g. 2025-08-22T21:35  ->  2025-08-22 21:35:00
+      $local = str_replace('T', ' ', $local);
+      if (preg_match('/^\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}$/', $local)) {
+         $local .= ':00';
+      }
+   }
+   // Very light validation
+   return $local;
+}
+function to_input_dt(?string $mysql){
+   // Convert "YYYY-MM-DD HH:MM:SS" -> "YYYY-MM-DDTHH:MM" for datetime-local value
+   if(!$mysql){ return ''; }
+   $ts = strtotime($mysql);
+   if($ts === false){ return ''; }
+   return date('Y-m-d\TH:i', $ts);
+}
+
 /* =========================================
-   ADD PRODUCT  (with categories)
+   ADD PRODUCT  (with categories + quantity)
 ========================================= */
 if(isset($_POST['add_product'])){
    $name        = filter_var($_POST['name'] ?? '', FILTER_SANITIZE_STRING);
    $price       = isset($_POST['price']) ? (float)$_POST['price'] : 0;
    $category_id = isset($_POST['category_id']) ? (int)$_POST['category_id'] : 0;
    $details     = filter_var($_POST['details'] ?? '', FILTER_SANITIZE_STRING);
+   $quantity    = isset($_POST['quantity']) ? max(0, (int)$_POST['quantity']) : 0;
 
    $image          = filter_var($_FILES['image']['name'] ?? '', FILTER_SANITIZE_STRING);
    $image_size     = $_FILES['image']['size'] ?? 0;
@@ -28,6 +56,15 @@ if(isset($_POST['add_product'])){
    if($category_id <= 0){
       $message[] = 'Please choose a category.';
    }
+   if($name === ''){
+      $message[] = 'Product name is required.';
+   }
+   if($price < 0){
+      $message[] = 'Price must be >= 0.';
+   }
+   if($quantity < 0){
+      $message[] = 'Quantity must be >= 0.';
+   }
 
    // Unique product name check
    $select_products = $conn->prepare("SELECT 1 FROM `products` WHERE name = ? LIMIT 1");
@@ -36,14 +73,18 @@ if(isset($_POST['add_product'])){
    if($select_products->rowCount() > 0){
       $message[] = 'Product name already exists!';
    }elseif(empty($message)){
-      $insert_products = $conn->prepare("INSERT INTO `products`(name, category_id, details, price, image) VALUES(?,?,?,?,?)");
-      $insert_products->execute([$name, $category_id, $details, $price, $image]);
+      // NOTE: requires the new `quantity` column in DB
+      $insert_products = $conn->prepare("
+         INSERT INTO `products`(name, category_id, details, price, quantity, image)
+         VALUES(?,?,?,?,?,?)
+      ");
+      $insert_products->execute([$name, $category_id, $details, $price, $quantity, $image]);
 
       if($insert_products){
          if($image && $image_size > 2000000){
             $message[] = 'Image size is too large!';
          }elseif($image){
-            move_uploaded_file($image_tmp_name, $image_folder);
+            @move_uploaded_file($image_tmp_name, $image_folder);
             $message[] = 'New product added!';
          }else{
             $message[] = 'New product added (no image).';
@@ -97,12 +138,10 @@ if(isset($_POST['save_promo'])){
    $discount_percent = (isset($_POST['discount_percent']) && $_POST['discount_percent'] !== '') ? (float)$_POST['discount_percent'] : null;
 
    $label     = isset($_POST['label']) ? trim(filter_var($_POST['label'], FILTER_SANITIZE_STRING)) : 'Limited Offer';
-   $starts_at = isset($_POST['starts_at']) ? trim($_POST['starts_at']) : '';
-   $ends_at   = isset($_POST['ends_at'])   ? trim($_POST['ends_at'])   : '';
+   // from datetime-local inputs
+   $starts_at = to_mysql_dt($_POST['starts_at'] ?? null);
+   $ends_at   = to_mysql_dt($_POST['ends_at'] ?? null);
    $active    = isset($_POST['active']) ? 1 : 0;
-
-   $starts_at = ($starts_at === '') ? null : $starts_at;
-   $ends_at   = ($ends_at === '')   ? null : $ends_at;
 
    $errs = [];
    if($product_id <= 0){ $errs[] = 'Choose a valid product.'; }
@@ -253,7 +292,7 @@ $show_products->execute($p_params);
       </div>
     <?php endif; ?>
 
-    <!-- Quick Actions (match dashboard) -->
+    <!-- Quick Actions -->
     <div class="bg-white rounded-lg shadow p-6 mb-6">
       <h3 class="text-lg font-semibold mb-4">Quick Actions</h3>
       <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -308,6 +347,13 @@ $show_products->execute($p_params);
             <input type="file" name="image" accept="image/jpg, image/jpeg, image/png"
                    class="w-full border rounded px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500" />
           </div>
+        </div>
+
+        <!-- NEW: Quantity -->
+        <div>
+          <label class="block text-sm text-gray-600 mb-1">Quantity in stock</label>
+          <input type="number" name="quantity" min="0" step="1" required placeholder="e.g. 10"
+                 class="w-full md:w-56 border rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500" />
         </div>
 
         <textarea name="details" required placeholder="Enter product details" rows="5"
@@ -392,8 +438,8 @@ $show_products->execute($p_params);
                 $final = null; $isLive = false;
 
                 if($promo){
-                  $inWindow = ($promo['starts_at'] === null || $promo['starts_at'] <= $now)
-                           && ($promo['ends_at'] === null   || $promo['ends_at']   >= $now);
+                  $inWindow = (empty($promo['starts_at']) || $promo['starts_at'] <= $now)
+                           && (empty($promo['ends_at'])   || $promo['ends_at']   >= $now);
                   if((int)$promo['active'] === 1 && $inWindow){
                     if($promo['promo_price'] !== null && $promo['promo_price'] !== ''){
                       $final = (float)$promo['promo_price'];
@@ -403,12 +449,17 @@ $show_products->execute($p_params);
                     if($final !== null && $final < $base){ $isLive = true; }
                   }
                 }
+
+                $qty = (int)($fetch_products['quantity'] ?? 0);
+                $qtyState = 'out';
+                if ($qty > 10)      $qtyState = 'in';
+                else if ($qty > 0)  $qtyState = 'low';
           ?>
           <span id="p<?= $pid; ?>" class="relative -top-20 block"></span>
 
           <div class="rounded-lg border hover:shadow-md transition bg-white overflow-hidden">
             <!-- Image -->
-            <div class="aspect-[4/3] bg-gray-100 flex items-center justify-center overflow-hidden">
+            <div class="aspect-[4/3] bg-gray-100 flex items-center justify-center overflow-hidden relative">
               <?php if(!empty($fetch_products['image'])): ?>
                 <img src="uploaded_img/<?= htmlspecialchars($fetch_products['image']); ?>"
                      alt=""
@@ -416,6 +467,17 @@ $show_products->execute($p_params);
               <?php else: ?>
                 <i class="fas fa-image text-gray-400 text-4xl"></i>
               <?php endif; ?>
+
+              <!-- Stock badge (top-left) -->
+              <div class="absolute top-2 left-2">
+                <?php if($qtyState==='in'): ?>
+                  <span class="text-xs px-2 py-1 rounded bg-emerald-100 text-emerald-800">In stock: <?= $qty; ?></span>
+                <?php elseif($qtyState==='low'): ?>
+                  <span class="text-xs px-2 py-1 rounded bg-amber-100 text-amber-800">Low: <?= $qty; ?></span>
+                <?php else: ?>
+                  <span class="text-xs px-2 py-1 rounded bg-rose-100 text-rose-800">Out of stock</span>
+                <?php endif; ?>
+              </div>
             </div>
 
             <!-- Content -->
@@ -514,15 +576,17 @@ $show_products->execute($p_params);
 
                 <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
-                    <label class="block text-xs text-gray-600 mb-1">Starts At (YYYY-MM-DD HH:MM:SS)</label>
-                    <input type="text" name="starts_at"
-                           value="<?= $promo && !empty($promo['starts_at']) ? htmlspecialchars($promo['starts_at']) : ''; ?>"
+                    <label class="block text-xs text-gray-600 mb-1">Starts At</label>
+                    <!-- NEW: datetime-local input -->
+                    <input type="datetime-local" name="starts_at"
+                           value="<?= $promo ? htmlspecialchars(to_input_dt($promo['starts_at'] ?? null)) : ''; ?>"
                            class="w-full border rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500" />
                   </div>
                   <div>
-                    <label class="block text-xs text-gray-600 mb-1">Ends At (YYYY-MM-DD HH:MM:SS)</label>
-                    <input type="text" name="ends_at"
-                           value="<?= $promo && !empty($promo['ends_at']) ? htmlspecialchars($promo['ends_at']) : ''; ?>"
+                    <label class="block text-xs text-gray-600 mb-1">Ends At</label>
+                    <!-- NEW: datetime-local input -->
+                    <input type="datetime-local" name="ends_at"
+                           value="<?= $promo ? htmlspecialchars(to_input_dt($promo['ends_at'] ?? null)) : ''; ?>"
                            class="w-full border rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500" />
                   </div>
                 </div>

@@ -10,33 +10,55 @@ if(!isset($admin_id)){
 
 $message = [];
 
+/* ---------- load categories for the dropdown ---------- */
+$all_categories = [];
+try{
+  $cats_stmt = $conn->prepare("SELECT id, name FROM categories ORDER BY name");
+  $cats_stmt->execute();
+  $all_categories = $cats_stmt->fetchAll(PDO::FETCH_ASSOC);
+}catch(Exception $e){
+  $message[] = 'Could not load categories.';
+}
+
 /* ===============================
-   UPDATE PRODUCT
+   UPDATE PRODUCT  (now with quantity + category_id)
 ================================= */
 if(isset($_POST['update_product'])){
-   $pid      = (int)($_POST['pid'] ?? 0);
+   $pid         = (int)($_POST['pid'] ?? 0);
+   $name        = isset($_POST['name']) ? trim(filter_var($_POST['name'], FILTER_SANITIZE_STRING)) : '';
+   $price_raw   = $_POST['price'] ?? '';
+   $price       = is_numeric($price_raw) ? (float)$price_raw : -1;
+   $category_id = isset($_POST['category_id']) ? (int)$_POST['category_id'] : 0;
+   $quantity    = isset($_POST['quantity']) ? max(0, (int)$_POST['quantity']) : 0;
+   $details     = isset($_POST['details']) ? trim(filter_var($_POST['details'], FILTER_SANITIZE_STRING)) : '';
 
-   $name     = isset($_POST['name']) ? trim(filter_var($_POST['name'], FILTER_SANITIZE_STRING)) : '';
-   $price    = isset($_POST['price']) ? trim($_POST['price']) : '';
-   $category = isset($_POST['category']) ? trim(filter_var($_POST['category'], FILTER_SANITIZE_STRING)) : '';
-   $details  = isset($_POST['details']) ? trim(filter_var($_POST['details'], FILTER_SANITIZE_STRING)) : '';
-
-   // basic validations (allow decimals)
    if($pid <= 0){ $message[] = 'Invalid product id.'; }
    if($name === ''){ $message[] = 'Name is required.'; }
-   if($price === '' || !is_numeric($price) || $price < 0){ $message[] = 'Enter a valid price (decimals allowed).'; }
-   if($category === ''){ $message[] = 'Category is required.'; }
+   if($price < 0){ $message[] = 'Enter a valid price (decimals allowed).'; }
+   if($category_id <= 0){ $message[] = 'Select a valid category.'; }
    if($details === ''){ $message[] = 'Details are required.'; }
 
-   // Proceed when valid
+   // derive category name (optional: keep legacy `category` column in sync)
+   $category_name = '';
+   if($category_id > 0){
+     $findCat = $conn->prepare("SELECT name FROM categories WHERE id = ? LIMIT 1");
+     $findCat->execute([$category_id]);
+     $rowCat = $findCat->fetch(PDO::FETCH_ASSOC);
+     $category_name = $rowCat['name'] ?? '';
+   }
+
    if(empty($message)){
-      $update_product = $conn->prepare("UPDATE `products` SET name = ?, category = ?, details = ?, price = ? WHERE id = ?");
-      $update_product->execute([$name, $category, $details, $price, $pid]);
+      // requires `quantity` column in products table
+      $sql = "UPDATE `products`
+              SET name = ?, category_id = ?, category = ?, details = ?, price = ?, quantity = ?
+              WHERE id = ?";
+      $stmt = $conn->prepare($sql);
+      $stmt->execute([$name, $category_id, $category_name, $details, $price, $quantity, $pid]);
       $message[] = 'Product updated successfully!';
    }
 
-   // Image update
-   if(isset($_FILES['image']) && !empty($_FILES['image']['name'])){
+   // Image update (optional)
+   if(isset($_FILES['image']) && !empty($_FILES['image']['name']) && $pid > 0){
       $image          = filter_var($_FILES['image']['name'], FILTER_SANITIZE_STRING);
       $image_size     = $_FILES['image']['size'];
       $image_tmp_name = $_FILES['image']['tmp_name'];
@@ -50,7 +72,7 @@ if(isset($_POST['update_product'])){
          $update_image->execute([$image, $pid]);
 
          if($update_image){
-            move_uploaded_file($image_tmp_name, $image_folder);
+            @move_uploaded_file($image_tmp_name, $image_folder);
             $old_path = 'uploaded_img/'.$old_image;
             if($old_image && is_file($old_path)){
                @unlink($old_path);
@@ -137,8 +159,12 @@ if($update_id > 0){
     <!-- Update Card -->
     <div class="bg-white rounded-lg shadow p-6">
       <div class="mb-6">
-        <h3 class="text-lg font-semibold">Editing: <span class="font-bold"><?= htmlspecialchars($fetch_products['name']); ?></span></h3>
-        <p class="text-sm text-gray-500">Product ID #<?= (int)$fetch_products['id']; ?> • Category: <span class="font-medium"><?= htmlspecialchars($fetch_products['category']); ?></span></p>
+        <h3 class="text-lg font-semibold">
+          Editing: <span class="font-bold"><?= htmlspecialchars($fetch_products['name']); ?></span>
+        </h3>
+        <p class="text-sm text-gray-500">
+          Product ID #<?= (int)$fetch_products['id']; ?>
+        </p>
       </div>
 
       <form action="" method="post" enctype="multipart/form-data" class="space-y-6">
@@ -188,26 +214,37 @@ if($update_id > 0){
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
                 <label class="block text-sm text-gray-600 mb-1">Category</label>
-                <select name="category" required
+                <select name="category_id" required
                         class="w-full border rounded px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500">
-                  <!-- keep current first -->
-                  <option value="<?= htmlspecialchars($fetch_products['category']); ?>" selected>
-                    <?= htmlspecialchars(ucfirst($fetch_products['category'])); ?> (current)
-                  </option>
-                  <option disabled>──────────</option>
-                  <!-- your categories -->
-                  <option value="wood">wood</option>
-                  <option value="clothes">clothes</option>
-                  <option value="wall decoration">wall decoration</option>
-                  <option value="brass">brass</option>
+                  <?php
+                    $current_cat_id = (int)($fetch_products['category_id'] ?? 0);
+                    if($current_cat_id > 0){
+                      // show current first for clarity
+                      foreach($all_categories as $c){
+                        if((int)$c['id'] === $current_cat_id){
+                          echo '<option value="'.(int)$c['id'].'" selected>'.htmlspecialchars($c['name']).' (current)</option>';
+                          echo '<option disabled>──────────</option>';
+                          break;
+                        }
+                      }
+                    } else {
+                      echo '<option value="" disabled selected>Select category</option>';
+                    }
+                    foreach($all_categories as $c){
+                      $cid = (int)$c['id'];
+                      if($cid === $current_cat_id) continue; // already printed as current
+                      echo '<option value="'.$cid.'">'.htmlspecialchars($c['name']).'</option>';
+                    }
+                  ?>
                 </select>
               </div>
 
+              <!-- NEW: Quantity -->
               <div>
-                <label class="block text-sm text-gray-600 mb-1">Short Summary (optional)</label>
-                <div class="border rounded px-3 py-2 bg-gray-50 text-sm text-gray-600 line-clamp-2" title="<?= htmlspecialchars($fetch_products['details']); ?>">
-                  <?= htmlspecialchars($fetch_products['details']); ?>
-                </div>
+                <label class="block text-sm text-gray-600 mb-1">Quantity in stock</label>
+                <input type="number" name="quantity" min="0" step="1" required placeholder="e.g. 10"
+                       value="<?= htmlspecialchars((string)($fetch_products['quantity'] ?? 0)); ?>"
+                       class="w-full border rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500" />
               </div>
             </div>
 

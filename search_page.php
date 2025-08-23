@@ -1,81 +1,104 @@
 <?php
-
 @include 'config.php';
-
 session_start();
 
-$user_id = $_SESSION['user_id'];
-
-if(!isset($user_id)){
+$user_id = $_SESSION['user_id'] ?? null;
+if(!$user_id){
    header('location:login.php');
-};
+   exit;
+}
 
+$message = $message ?? [];
+
+/* =========================
+   Add to WISHLIST (trust pid)
+========================= */
 if(isset($_POST['add_to_wishlist'])){
+   $pid = (int)($_POST['pid'] ?? 0);
 
-   $pid = $_POST['pid'];
-   $pid = filter_var($pid, FILTER_SANITIZE_STRING);
-   $p_name = $_POST['p_name'];
-   $p_name = filter_var($p_name, FILTER_SANITIZE_STRING);
-   $p_price = $_POST['p_price'];
-   $p_price = filter_var($p_price, FILTER_SANITIZE_STRING);
-   $p_image = $_POST['p_image'];
-   $p_image = filter_var($p_image, FILTER_SANITIZE_STRING);
+   // Load product from DB
+   $pstmt = $conn->prepare("SELECT id, name, price, image FROM products WHERE id = ? LIMIT 1");
+   $pstmt->execute([$pid]);
+   $prod = $pstmt->fetch(PDO::FETCH_ASSOC);
 
-   $check_wishlist_numbers = $conn->prepare("SELECT * FROM `wishlist` WHERE name = ? AND user_id = ?");
-   $check_wishlist_numbers->execute([$p_name, $user_id]);
-
-   $check_cart_numbers = $conn->prepare("SELECT * FROM `cart` WHERE name = ? AND user_id = ?");
-   $check_cart_numbers->execute([$p_name, $user_id]);
-
-   if($check_wishlist_numbers->rowCount() > 0){
-      $message[] = 'already added to wishlist!';
-   }elseif($check_cart_numbers->rowCount() > 0){
-      $message[] = 'already added to cart!';
+   if(!$prod){
+      $message[] = 'Product not found.';
    }else{
-      $insert_wishlist = $conn->prepare("INSERT INTO `wishlist`(user_id, pid, name, price, image) VALUES(?,?,?,?,?)");
-      $insert_wishlist->execute([$user_id, $pid, $p_name, $p_price, $p_image]);
-      $message[] = 'added to wishlist!';
-   }
+      $checkW = $conn->prepare("SELECT 1 FROM wishlist WHERE pid = ? AND user_id = ? LIMIT 1");
+      $checkW->execute([$pid, $user_id]);
 
-}
+      $checkC = $conn->prepare("SELECT 1 FROM cart WHERE pid = ? AND user_id = ? LIMIT 1");
+      $checkC->execute([$pid, $user_id]);
 
-if(isset($_POST['add_to_cart'])){
-
-   $pid = $_POST['pid'];
-   $pid = filter_var($pid, FILTER_SANITIZE_STRING);
-   $p_name = $_POST['p_name'];
-   $p_name = filter_var($p_name, FILTER_SANITIZE_STRING);
-   $p_price = $_POST['p_price'];
-   $p_price = filter_var($p_price, FILTER_SANITIZE_STRING);
-   $p_image = $_POST['p_image'];
-   $p_image = filter_var($p_image, FILTER_SANITIZE_STRING);
-   $p_qty = $_POST['p_qty'];
-   $p_qty = filter_var($p_qty, FILTER_SANITIZE_STRING);
-
-   $check_cart_numbers = $conn->prepare("SELECT * FROM `cart` WHERE name = ? AND user_id = ?");
-   $check_cart_numbers->execute([$p_name, $user_id]);
-
-   if($check_cart_numbers->rowCount() > 0){
-      $message[] = 'already added to cart!';
-   }else{
-
-      $check_wishlist_numbers = $conn->prepare("SELECT * FROM `wishlist` WHERE name = ? AND user_id = ?");
-      $check_wishlist_numbers->execute([$p_name, $user_id]);
-
-      if($check_wishlist_numbers->rowCount() > 0){
-         $delete_wishlist = $conn->prepare("DELETE FROM `wishlist` WHERE name = ? AND user_id = ?");
-         $delete_wishlist->execute([$p_name, $user_id]);
+      if($checkW->rowCount() > 0){
+         $message[] = 'Already in wishlist!';
+      }elseif($checkC->rowCount() > 0){
+         $message[] = 'Already in cart!';
+      }else{
+         $ins = $conn->prepare("INSERT INTO wishlist (user_id, pid, name, price, image) VALUES (?,?,?,?,?)");
+         $ins->execute([$user_id, $prod['id'], $prod['name'], $prod['price'], $prod['image']]);
+         $message[] = 'Added to wishlist!';
       }
-
-      $insert_cart = $conn->prepare("INSERT INTO `cart`(user_id, pid, name, price, quantity, image) VALUES(?,?,?,?,?,?)");
-      $insert_cart->execute([$user_id, $pid, $p_name, $p_price, $p_qty, $p_image]);
-      $message[] = 'added to cart!';
    }
-
 }
 
-?>
+/* =========================
+   Add to CART with stock subtraction
+========================= */
+if(isset($_POST['add_to_cart'])){
+   $pid  = (int)($_POST['pid'] ?? 0);
+   $reqQ = max(1, (int)($_POST['p_qty'] ?? 1));
 
+   try{
+      $conn->beginTransaction();
+
+      // Lock product for stock check
+      $pstmt = $conn->prepare("SELECT id, name, price, image, quantity FROM products WHERE id = ? FOR UPDATE");
+      $pstmt->execute([$pid]);
+      $prod = $pstmt->fetch(PDO::FETCH_ASSOC);
+
+      if(!$prod){
+         $conn->rollBack();
+         $message[] = 'Product not found.';
+      }elseif((int)$prod['quantity'] <= 0){
+         $conn->rollBack();
+         $message[] = 'Out of stock.';
+      }else{
+         $avail   = (int)$prod['quantity'];
+         $addQty  = min($reqQ, $avail);     // cap by available
+         $newStock = $avail - $addQty;
+
+         // Upsert/increment cart row
+         $csel = $conn->prepare("SELECT id, quantity FROM cart WHERE user_id = ? AND pid = ? FOR UPDATE");
+         $csel->execute([$user_id, $pid]);
+
+         if($row = $csel->fetch(PDO::FETCH_ASSOC)){
+            $newCartQty = (int)$row['quantity'] + $addQty;
+            $cupd = $conn->prepare("UPDATE cart SET quantity = ?, price = ?, name = ?, image = ? WHERE id = ?");
+            $cupd->execute([$newCartQty, $prod['price'], $prod['name'], $prod['image'], $row['id']]);
+         }else{
+            $cins = $conn->prepare("INSERT INTO cart (user_id, pid, name, price, quantity, image) VALUES (?,?,?,?,?,?)");
+            $cins->execute([$user_id, $prod['id'], $prod['name'], $prod['price'], $addQty, $prod['image']]);
+         }
+
+         // Subtract stock
+         $up = $conn->prepare("UPDATE products SET quantity = ? WHERE id = ?");
+         $up->execute([$newStock, $pid]);
+
+         $conn->commit();
+
+         if($addQty < $reqQ){
+            $message[] = "Only {$addQty} left; added {$addQty} to cart.";
+         }else{
+            $message[] = 'Added to cart!';
+         }
+      }
+   }catch(Exception $e){
+      if($conn->inTransaction()){ $conn->rollBack(); }
+      $message[] = 'Could not add to cart. Please try again.';
+   }
+}
+?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -97,9 +120,7 @@ if(isset($_POST['add_to_cart'])){
                   dark: '#3E2723',
                   darker: '#1B0F0A'
                },
-               fontFamily: {
-                  gaming: ['Orbitron', 'monospace'],
-               }
+               fontFamily: { gaming: ['Orbitron', 'monospace'] }
             }
          }
       }
@@ -110,70 +131,42 @@ if(isset($_POST['add_to_cart'])){
    <!-- Google Fonts -->
    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 
-   <!-- Your site CSS (kept) -->
+   <!-- Your site CSS -->
    <link rel="stylesheet" href="css/style.css">
 
    <style>
       *{margin:0;padding:0;box-sizing:border-box}
-      body{
-         font-family:'Inter',sans-serif;
-         background:linear-gradient(135deg,#1B0F0A 0%,#3E2723 50%,#5D4037 100%);
-         color:#fff; overflow-x:hidden;
-      }
+      body{font-family:'Inter',sans-serif;background:linear-gradient(135deg,#1B0F0A 0%,#3E2723 50%,#5D4037 100%);color:#fff;overflow-x:hidden}
       .neon-glow{box-shadow:0 0 20px rgba(139,69,19,.5),0 0 40px rgba(160,82,45,.3),0 0 60px rgba(210,180,140,.2)}
       .glass-effect{background:rgba(255,255,255,.08);backdrop-filter:blur(10px);border:1px solid rgba(255,255,255,.18)}
       .hover-glow:hover{transform:translateY(-5px);box-shadow:0 10px 25px rgba(139,69,19,.35);transition:.3s ease}
       .floating-animation{animation:floating 3s ease-in-out infinite}
       @keyframes floating{0%,100%{transform:translateY(0)}50%{transform:translateY(-10px)}}
       .gradient-text{background:linear-gradient(45deg,#8B4513,#A0522D,#D2B48C);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
-      .hero-bg{
-         background:
-            radial-gradient(circle at 20% 80%, rgba(139,69,19,.35) 0%, transparent 55%),
-            radial-gradient(circle at 80% 20%, rgba(210,180,140,.35) 0%, transparent 55%),
-            radial-gradient(circle at 40% 40%, rgba(160,82,45,.35) 0%, transparent 55%);
-      }
-      .category-icon{
-         width:80px;height:80px;border-radius:20px;display:flex;align-items:center;justify-content:center;margin:0 auto 20px;
-         background:linear-gradient(135deg, rgba(139,69,19,.25), rgba(160,82,45,.25));transition:.3s ease
-      }
+      .hero-bg{background:radial-gradient(circle at 20% 80%, rgba(139,69,19,.35) 0%, transparent 55%),radial-gradient(circle at 80% 20%, rgba(210,180,140,.35) 0%, transparent 55%),radial-gradient(circle at 40% 40%, rgba(160,82,45,.35) 0%, transparent 55%)}
+      .category-icon{width:80px;height:80px;border-radius:20px;display:flex;align-items:center;justify-content:center;margin:0 auto 20px;background:linear-gradient(135deg, rgba(139,69,19,.25), rgba(160,82,45,.25));transition:.3s ease}
       .category-icon:hover{transform:rotateY(180deg);background:linear-gradient(135deg,#8B4513,#D2B48C)}
-
-      /* ---------- readability bump (not headers) ---------- */
-      .text-base{font-size:1.125rem!important}
-      .text-lg{font-size:1.25rem!important}
-      .text-xl{font-size:1.375rem!important}
+      .text-base{font-size:1.125rem!important}.text-lg{font-size:1.25rem!important}.text-xl{font-size:1.375rem!important}
       p,label,input,button,a,li{font-size:1.12rem}
-
-      /* ---------- modern product grid ---------- */
-      .product-card{
-         background:linear-gradient(180deg,rgba(62,39,35,.92),rgba(62,39,35,.8));
-         border:1px solid rgba(210,180,140,.28); border-radius:22px; backdrop-filter:blur(16px);
-         transition:transform .4s ease, box-shadow .4s ease, border-color .4s ease; position:relative;overflow:hidden
-      }
+      .product-card{background:linear-gradient(180deg,rgba(62,39,35,.92),rgba(62,39,35,.8));border:1px solid rgba(210,180,140,.28);border-radius:22px;backdrop-filter:blur(16px);transition:transform .4s ease, box-shadow .4s ease, border-color .4s ease;position:relative;overflow:hidden}
       .product-card:hover{transform:translateY(-10px) scale(1.02);border-color:rgba(210,180,140,.6);box-shadow:0 22px 48px rgba(160,82,45,.35)}
-      .product-card .aspect-square{
-         position:relative;border-radius:18px;border:1px solid rgba(210,180,140,.25);overflow:hidden;
-         background:radial-gradient(600px 120px at 20% 0%, rgba(210,180,140,.18), transparent 60%)
-      }
+      .product-card .aspect-square{position:relative;border-radius:18px;border:1px solid rgba(210,180,140,.25);overflow:hidden;background:radial-gradient(600px 120px at 20% 0%, rgba(210,180,140,.18), transparent 60%)}
       .product-card img{transition:transform .6s ease}
       .group:hover .product-card img{transform:scale(1.07)}
-      .price-badge{
-         font-size:1.05rem;letter-spacing:.3px;padding:.6rem 1rem;border:1px solid rgba(255,255,255,.18);
-         box-shadow:0 6px 18px rgba(210,180,140,.25)
-      }
+      .price-badge{font-size:1.05rem;letter-spacing:.3px;padding:.6rem 1rem;border:1px solid rgba(255,255,255,.18);box-shadow:0 6px 18px rgba(210,180,140,.25)}
       .product-title{font-weight:800;letter-spacing:.2px;color:#FFF7EE;text-shadow:0 1px 0 rgba(0,0,0,.35);line-height:1.25}
       .product-card label{color:#F0E6DA;font-weight:600}
       .product-card .qty{background:rgba(255,255,255,.08)}
       .product-card .qty:focus{outline:none;box-shadow:0 0 0 3px rgba(210,180,140,.35)}
-      .product-card button[name="add_to_cart"]{font-size:1.1rem;letter-spacing:.2px}
-      .product-card .glass-effect{border-color:rgba(255,255,255,.25);color:#E2C9A8}
+      .badge-stock{position:absolute;top:6px;right:6px}
+      .oos-overlay{position:absolute;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;font-weight:800;letter-spacing:.5px}
    </style>
 </head>
 <body>
 
 <?php include 'header.php'; ?>
 
-<!-- Hero (matches home.php) -->
+<!-- Hero -->
 <section class="relative min-h-[60vh] md:min-h-[70vh] flex items-center justify-center overflow-hidden hero-bg">
    <div class="absolute top-10 left-10 w-80 h-80 bg-gradient-to-r from-[rgba(139,69,19,0.2)] to-[rgba(210,180,140,0.2)] rounded-full blur-3xl floating-animation"></div>
    <div class="absolute bottom-10 right-10 w-72 h-72 bg-gradient-to-r from-[rgba(160,82,45,0.2)] to-[rgba(139,69,19,0.2)] rounded-full blur-3xl floating-animation" style="animation-delay:1s"></div>
@@ -187,7 +180,6 @@ if(isset($_POST['add_to_cart'])){
          <div class="h-1 w-28 bg-gradient-to-r from-[#8B4513] to-[#D2B48C] rounded-full"></div>
          <p class="text-xl text-gray-300 max-w-2xl">Find authentic Sri Lankan handicrafts by name, category, or details.</p>
 
-         <!-- Search bar (your PHP kept intact below) -->
          <form action="" method="POST" class="flex flex-col sm:flex-row gap-3 max-w-xl">
             <input
                type="text"
@@ -219,7 +211,7 @@ if(isset($_POST['add_to_cart'])){
    </div>
 </section>
 
-<!-- Categories (visual only, no PHP changed) -->
+<!-- Categories -->
 <section class="py-16">
    <div class="container mx-auto px-6 lg:px-12">
       <div class="text-center mb-12">
@@ -253,17 +245,27 @@ if(isset($_POST['add_to_cart'])){
    </div>
 </section>
 
-<!-- Results Grid (PHP unchanged, only UI) -->
+<!-- Results Grid -->
 <section class="py-10 relative">
   <div class="container mx-auto px-6 lg:px-12">
+
+    <?php if(!empty($message)): ?>
+      <div class="max-w-3xl mx-auto mb-8 space-y-2">
+        <?php foreach($message as $m): ?>
+          <div class="bg-amber-100 text-amber-900 border border-amber-300 px-4 py-2 rounded"><?= htmlspecialchars($m) ?></div>
+        <?php endforeach; ?>
+      </div>
+    <?php endif; ?>
+
     <div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-8 lg:gap-10">
       <?php
         if (isset($_POST['search_btn'])) {
           $search_box = $_POST['search_box'] ?? '';
           $search_box = filter_var($search_box, FILTER_SANITIZE_STRING);
-
-          // Safe LIKE query with placeholders
           $like = "%{$search_box}%";
+
+          // If you still keep a text `category` column in products, this works.
+          // If you dropped it, switch to a JOIN on categories and search c.name instead.
           $select_products = $conn->prepare(
             "SELECT * FROM `products`
              WHERE name LIKE ? OR category LIKE ? OR details LIKE ?
@@ -273,50 +275,71 @@ if(isset($_POST['add_to_cart'])){
 
           if ($select_products->rowCount() > 0) {
             while ($fetch_products = $select_products->fetch(PDO::FETCH_ASSOC)) {
+              $pid   = (int)$fetch_products['id'];
+              $price = (float)$fetch_products['price'];
+              $qty   = (int)($fetch_products['quantity'] ?? 0);
+              $inStock = $qty > 0;
       ?>
       <form action="" method="POST" class="group">
-        <div class="product-card p-6 h-full flex flex-col">
+        <div class="product-card p-6 h-full flex flex-col relative">
           <!-- Price Badge -->
           <div class="absolute top-6 left-6 bg-gradient-to-r from-[#8B4513] to-[#D2B48C] text-white rounded-full font-bold text-sm z-10 neon-glow price-badge">
-            Rs <?= htmlspecialchars($fetch_products['price']); ?>/-
+            Rs <?= number_format($price, 2); ?>/-
+          </div>
+
+          <!-- Stock badge (show only when < 10; hide for 10+) -->
+          <div class="badge-stock z-10">
+            <?php if(!$inStock): ?>
+              <span class="text-xs px-2 py-1 rounded bg-rose-100 text-rose-800">Out of stock</span>
+            <?php elseif($qty < 10): ?>
+              <span class="text-xs px-2 py-1 rounded bg-amber-100 text-amber-800">Only <?= $qty; ?> left</span>
+            <?php endif; ?>
           </div>
 
           <!-- View Button -->
-          <a href="view_page.php?pid=<?= (int)$fetch_products['id']; ?>"
+          <a href="view_page.php?pid=<?= $pid; ?>"
              class="absolute top-6 right-6 w-11 h-11 glass-effect rounded-full flex items-center justify-center hover:text-white hover:bg-gradient-to-r hover:from-[#8B4513] hover:to-[#D2B48C] transition">
             <i class="fas fa-eye"></i>
           </a>
 
           <!-- Product Image -->
-          <div class="aspect-square rounded-2xl overflow-hidden mb-6">
+          <div class="aspect-square rounded-2xl overflow-hidden mb-6 relative">
             <img src="uploaded_img/<?= htmlspecialchars($fetch_products['image']); ?>"
                  alt="<?= htmlspecialchars($fetch_products['name']); ?>"
                  class="w-full h-full object-cover"
                  onerror="this.src='uploaded_img/placeholder.png';">
+            <?php if(!$inStock): ?>
+              <div class="oos-overlay text-white text-lg rounded">OUT OF STOCK</div>
+            <?php endif; ?>
           </div>
 
           <!-- Product Info -->
           <div class="space-y-4 mt-auto">
             <h3 class="text-xl product-title"><?= htmlspecialchars($fetch_products['name']); ?></h3>
 
-            <!-- Hidden Inputs -->
-            <input type="hidden" name="pid" value="<?= (int)$fetch_products['id']; ?>">
-            <input type="hidden" name="p_name" value="<?= htmlspecialchars($fetch_products['name']); ?>">
-            <input type="hidden" name="p_price" value="<?= htmlspecialchars($fetch_products['price']); ?>">
-            <input type="hidden" name="p_image" value="<?= htmlspecialchars($fetch_products['image']); ?>">
+            <!-- Hidden Inputs (server trusts only pid) -->
+            <input type="hidden" name="pid" value="<?= $pid; ?>">
 
-            <!-- Quantity Input -->
+            <!-- Quantity Input (no max; server caps) -->
             <div class="flex items-center gap-3">
               <label class="text-sm font-medium">QTY:</label>
-              <input type="number" min="1" value="1" name="p_qty"
-                     class="qty w-24 px-3 py-2 glass-effect rounded-lg text-white text-center focus:ring-2 focus:ring-[rgb(139,69,19)] transition-all">
+              <input type="number" min="1" value="<?= $inStock ? 1 : 0; ?>" name="p_qty"
+                     class="qty w-24 px-3 py-2 glass-effect rounded-lg text-white text-center focus:ring-2 focus:ring-[rgb(139,69,19)] transition-all"
+                     <?= $inStock ? '' : 'disabled'; ?>>
             </div>
 
             <!-- Add to Cart Button -->
             <button type="submit" name="add_to_cart"
-                    class="w-full bg-gradient-to-r from-[#8B4513] to-[#D2B48C] text-white py-3.5 rounded-xl font-semibold hover-glow neon-glow transition-all duration-300 transform hover:scale-[1.02]">
+                    class="w-full bg-gradient-to-r from-[#8B4513] to-[#D2B48C] text-white py-3.5 rounded-xl font-semibold hover-glow neon-glow transition-all duration-300 transform hover:scale-[1.02]"
+                    <?= $inStock ? '' : 'disabled style="opacity:.6;cursor:not-allowed"'; ?>>
               <i class="fas fa-shopping-cart mr-2"></i>
-              ADD TO CART
+              <?= $inStock ? 'ADD TO CART' : 'UNAVAILABLE' ?>
+            </button>
+
+            <!-- Wishlist Button -->
+            <button type="submit" name="add_to_wishlist"
+                    class="w-full mt-2 glass-effect text-white py-3.5 rounded-xl font-semibold hover-glow transition-all">
+              <i class="fas fa-heart mr-2"></i> ADD TO WISHLIST
             </button>
           </div>
         </div>
@@ -327,7 +350,7 @@ if(isset($_POST['add_to_cart'])){
             echo '
               <div class="col-span-full text-center py-16 glass-effect rounded-3xl">
                 <i class="fas fa-box-open text-6xl" style="color:#CD853F"></i>
-                <p class="text-2xl text-gray-200 font-medium mt-4">No products available yet!</p>
+                <p class="text-2xl text-gray-200 font-medium mt-4">No products match your search.</p>
               </div>';
           }
         } else {
